@@ -95,7 +95,7 @@ export type requestDataResponse = {
 
 export interface StreamResponseChunk{[key:string]:string}
 
-export type Parameter = 'temperature'|'top_k'|'repetition_penalty'|'min_p'|'top_a'|'top_p'|'frequency_penalty'|'presence_penalty'|'reasoning_effort'|'thinking_tokens'|'verbosity'
+export type Parameter = 'temperature'|'top_k'|'repetition_penalty'|'min_p'|'top_a'|'top_p'|'frequency_penalty'|'presence_penalty'|'reasoning_effort'|'thinking_tokens'|'verbosity'|'thinking'
 export type ModelModeExtended = 'model'|'submodel'|'memory'|'emotion'|'otherAx'|'translate'
 type ParameterMap = {
     [key in Parameter]?: string;
@@ -214,6 +214,12 @@ export function applyParameters(data: { [key: string]: any }, parameters: Parame
                 }
                 case 'verbosity':{
                     value = getVerbosity(db.seperateParameters[ModelMode].verbosity)
+                    break
+                }
+                case 'thinking':{
+                    if(db.seperateParameters[ModelMode]['thinking']) {
+                        value = db.seperateParameters[ModelMode]['thinking']
+                    }
                     break
                 }
             }
