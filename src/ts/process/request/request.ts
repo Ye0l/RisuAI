@@ -166,7 +166,8 @@ export function applyParameters(data: { [key: string]: any }, parameters: Parame
 
         for(const parameter of parameters){
             
-            let value:number|string = 0
+            // let value:number|string = 0
+            let value: any = 0
             if(parameter === 'top_k' && arg.ignoreTopKIfZero && db.seperateParameters[ModelMode][parameter] === 0){
                 continue
             }
@@ -235,7 +236,8 @@ export function applyParameters(data: { [key: string]: any }, parameters: Parame
 
 
     for(const parameter of parameters){
-        let value:number|string = 0
+        // let value:number|string = 0
+        let value:any = 0
         if(parameter === 'top_k' && arg.ignoreTopKIfZero && db.top_k === 0){
             continue
         }
@@ -282,6 +284,10 @@ export function applyParameters(data: { [key: string]: any }, parameters: Parame
             }
             case 'thinking_tokens':{
                 value = db.thinkingTokens
+                break
+            }
+            case 'thinking':{
+                value = db.thinking
                 break
             }
         }
