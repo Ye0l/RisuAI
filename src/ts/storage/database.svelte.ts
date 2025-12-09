@@ -589,6 +589,9 @@ export function setDatabase(data:Database){
     }
     changeLanguage(data.language)
     setDatabaseLite(data)
+    if (checkNullish(data.thinking)) {
+        data.thinking = { type: 'disabled' }
+    }
 }
 
 export function setDatabaseLite(data:Database){
@@ -1090,6 +1093,9 @@ export interface Database{
     ImagenImageSize:string
     ImagenAspectRatio:string
     ImagenPersonGeneration:string
+    thinking: {
+        type: 'disabled' | 'enabled'
+    }
 }
 
 interface SeparateParameters{
@@ -1454,6 +1460,9 @@ export interface botPreset{
     fallbackWhenBlankResponse?: boolean
     verbosity:number
     dynamicOutput?:DynamicOutput
+    thinking: {
+        type: 'disabled' | 'enabled'
+    }
 }
 
 
@@ -1772,7 +1781,8 @@ export const presetTemplate:botPreset = {
     },
     top_p: 1,
     useInstructPrompt: false,
-    verbosity: 1
+    verbosity: 1,
+    thinking: {type: 'disabled'}
 }
 
 const defaultSdData:[string,string][] = [
@@ -1866,7 +1876,8 @@ export function saveCurrentPreset(){
         fallbackModels: safeStructuredClone(db.fallbackModels),
         fallbackWhenBlankResponse: db.fallbackWhenBlankResponse ?? false,
         verbosity: db.verbosity ?? 1,
-        dynamicOutput: db.dynamicOutput ?? null
+        dynamicOutput: db.dynamicOutput ?? null,
+        thinking: safeStructuredClone(db.thinking)
     }
     
     if(!Array.isArray(pres)){
@@ -2012,6 +2023,7 @@ export function setPreset(db:Database, newPres: botPreset){
     db.modelTools = safeStructuredClone(newPres.modelTools ?? [])
     db.verbosity = newPres.verbosity ?? 1
     db.dynamicOutput = newPres.dynamicOutput
+    db.thinking = safeStructuredClone(newPres.thinking ?? { type: 'disabled' })
 
     return db
 }

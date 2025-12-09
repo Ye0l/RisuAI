@@ -52,6 +52,9 @@ interface requestDataArgument{
     escape?:boolean
     tools?: MCPTool[]
     rememberToolUsage?: boolean
+    thinking?: {
+        type: 'disabled' | 'enabled'
+    }
 }
 
 export interface RequestDataArgumentExtended extends requestDataArgument{

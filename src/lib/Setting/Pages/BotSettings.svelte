@@ -340,7 +340,11 @@
 
         <NumberInput bind:value={DBState.db.generationSeed} marginBottom={true}/>
     {/if}
-
+    <span class="text-textcolor">Thinking Type</span>
+    <SelectInput bind:value={DBState.db.thinking.type} marginBottom>
+        <OptionInput value="disabled">Disabled</OptionInput>
+        <OptionInput value="enabled">Enabled</OptionInput>
+    </SelectInput>
     {#if modelInfo.parameters.includes('thinking_tokens')}
         <span class="text-textcolor">{language.thinkingTokens}</span>
         <SliderInput min={-1} max={64000} marginBottom step={200} bind:value={DBState.db.thinkingTokens} disableable/>
