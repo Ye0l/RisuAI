@@ -1110,228 +1110,145 @@ export async function requestOpenAIResponseAPI(arg:RequestDataArgumentExtended):
     }
 }
 
-// function getTranStream(arg:RequestDataArgumentExtended):TransformStream<Uint8Array, StreamResponseChunk> {
-//     let dataUint:Uint8Array|Buffer = new Uint8Array([])
-//     let reasoningContent = ""
-//     const db = getDatabase()
-
-//     return new TransformStream<Uint8Array, StreamResponseChunk>({
-//         async transform(chunk, control) {
-//             dataUint = Buffer.from(new Uint8Array([...dataUint, ...chunk]))
-//             let JSONreaded:{[key:string]:string} = {}
-//                         try {
-//                 const datas = dataUint.toString().split('\n')
-//                 let readed:{[key:string]:string} = {}
-//                 for(const data of datas){
-//                     if(data.startsWith("data: ")){
-//                         try {
-//                             const rawChunk = data.replace("data: ", "")
-//                             if(rawChunk === "[DONE]"){
-//                                 if(arg.modelInfo.flags.includes(LLMFlags.deepSeekThinkingOutput)){
-//                                     readed["0"] = readed["0"].replace(/(.*)\<\/think\>/gms, (m, p1) => {
-//                                         reasoningContent = p1
-//                                         return ""
-//                                     })
-                
-//                                     if(reasoningContent){
-//                                         reasoningContent = reasoningContent.replace(/\<think\>/gm, '')
-//                                     }
-//                                 }                
-//                                 if(arg.extractJson && (db.jsonSchemaEnabled || arg.schema)){
-//                                     for(const key in readed){
-//                                         const extracted = extractJSON(readed[key], arg.extractJson)
-//                                         JSONreaded[key] = extracted
-//                                     }
-//                                     console.log(JSONreaded)
-//                                     control.enqueue(JSONreaded)
-//                                 }
-//                                 else if(reasoningContent){
-//                                     control.enqueue({
-//                                         "0": `<Thoughts>\n${reasoningContent}\n</Thoughts>\n${readed["0"]}`
-//                                     })
-//                                 }
-//                                 else{
-//                                     control.enqueue(readed)
-//                                 }
-//                                 return
-//                             }
-//                             const choices = JSON.parse(rawChunk).choices
-//                             for(const choice of choices){
-//                                 const chunk = choice.delta.content ?? choices.text
-//                                 if(chunk){
-//                                     if(arg.multiGen){
-//                                         const ind = choice.index.toString()
-//                                         if(!readed[ind]){
-//                                             readed[ind] = ""
-//                                         }
-//                                         readed[ind] += chunk
-//                                     }
-//                                     else{
-//                                         if(!readed["0"]){
-//                                             readed["0"] = ""
-//                                         }
-//                                         readed["0"] += chunk
-//                                     }
-//                                 }
-//                                 // Check for tool calls in the delta
-//                                 if(choice?.delta?.tool_calls){
-//                                     if(!readed["__tool_calls"]){
-//                                         readed["__tool_calls"] = JSON.stringify({})
-//                                     }
-//                                     const toolCallsData = JSON.parse(readed["__tool_calls"])
-                                    
-//                                     for(const toolCall of choice.delta.tool_calls) {
-//                                         const index = toolCall.index ?? 0
-//                                         const toolCallId = toolCall.id
-                                        
-//                                         // Initialize tool call data if not exists
-//                                         if(!toolCallsData[index]) {
-//                                             toolCallsData[index] = {
-//                                                 id: toolCallId || null,
-//                                                 type: 'function',
-//                                                 function: {
-//                                                     name: null,
-//                                                     arguments: ''
-//                                                 }
-//                                             }
-//                                         }
-                                        
-//                                         // Update tool call data incrementally
-//                                         if(toolCall.id) {
-//                                             toolCallsData[index].id = toolCall.id
-//                                         }
-//                                         if(toolCall.function?.name) {
-//                                             toolCallsData[index].function.name = toolCall.function.name
-//                                         }
-//                                         if(toolCall.function?.arguments) {
-//                                             toolCallsData[index].function.arguments += toolCall.function.arguments
-//                                         }
-//                                     }
-                                    
-//                                     readed["__tool_calls"] = JSON.stringify(toolCallsData)
-//                                 }
-//                                 if(choice?.delta?.reasoning_content){
-//                                     reasoningContent += choice.delta.reasoning_content
-//                                 }
-//                             }
-//                         } catch (error) {}
-//                     }
-//                 }
-                
-//                 if(arg.modelInfo.flags.includes(LLMFlags.deepSeekThinkingOutput)){
-//                     readed["0"] = readed["0"].replace(/(.*)\<\/think\>/gms, (m, p1) => {
-//                         reasoningContent = p1
-//                         return ""
-//                     })
-
-//                     if(reasoningContent){
-//                         reasoningContent = reasoningContent.replace(/\<think\>/gm, '')
-//                     }
-//                 }
-//                 if(arg.extractJson && (db.jsonSchemaEnabled || arg.schema)){
-//                     for(const key in readed){
-//                         const extracted = extractJSON(readed[key], arg.extractJson)
-//                         JSONreaded[key] = extracted
-//                     }
-//                     console.log(JSONreaded)
-//                     control.enqueue(JSONreaded)
-//                 }
-//                 else if(reasoningContent){
-//                     control.enqueue({
-//                         "0": `<Thoughts>\n${reasoningContent}\n</Thoughts>\n${readed["0"]}`
-//                     })
-//                 }
-//                 else{
-//                     control.enqueue(readed)
-//                 }
-//             } catch (error) {
-                
-//             }
-//         }        
-//     })
-// }
-
-function getTranStream(arg: RequestDataArgumentExtended): TransformStream<Uint8Array, StreamResponseChunk> {
-    let buffer = ""; // 문자열 버퍼 사용
-    let reasoningContent = "";
-    let isThinking = false; // <Thoughts> 태그 상태 추적
-    const db = getDatabase();
-
-    const decoder = new TextDecoder();
+function getTranStream(arg:RequestDataArgumentExtended):TransformStream<Uint8Array, StreamResponseChunk> {
+    let dataUint:Uint8Array|Buffer = new Uint8Array([])
+    let reasoningContent = ""
+    const db = getDatabase()
 
     return new TransformStream<Uint8Array, StreamResponseChunk>({
         async transform(chunk, control) {
-            // 들어온 chunk를 decode하여 버퍼에 추가
-            buffer += decoder.decode(chunk, { stream: true });
-            
-            const lines = buffer.split('\n');
-            // 마지막 줄은 불완전할 수 있으므로 버퍼에 남겨둠
-            buffer = lines.pop() ?? ""; 
-
-            for (const line of lines) {
-                const trimmedLine = line.trim();
-                if (!trimmedLine.startsWith("data: ")) continue;
-
-                const rawChunk = trimmedLine.replace("data: ", "");
-                if (rawChunk === "[DONE]") {
-                    // 스트림 종료 시 열린 태그가 있다면 닫아줌
-                    if (isThinking) {
-                        control.enqueue({ "0": "\n</Thoughts>\n" });
-                        isThinking = false;
-                    }
-                    return;
-                }
-
-                try {
-                    const json = JSON.parse(rawChunk);
-                    const choices = json.choices;
-                    
-                    if (!choices || choices.length === 0) continue;
-
-                    for (const choice of choices) {
-                        const delta = choice.delta;
-                        let outputDelta = "";
-
-                        // 1. 추론(Reasoning) 내용 처리
-                        if (delta?.reasoning_content) {
-                            if (!isThinking) {
-                                outputDelta += "<Thoughts>\n";
-                                isThinking = true;
+            dataUint = Buffer.from(new Uint8Array([...dataUint, ...chunk]))
+            let JSONreaded:{[key:string]:string} = {}
+                        try {
+                const datas = dataUint.toString().split('\n')
+                let readed:{[key:string]:string} = {}
+                for(const data of datas){
+                    if(data.startsWith("data: ")){
+                        try {
+                            const rawChunk = data.replace("data: ", "")
+                            if(rawChunk === "[DONE]"){
+                                if(arg.modelInfo.flags.includes(LLMFlags.deepSeekThinkingOutput)){
+                                    readed["0"] = readed["0"].replace(/(.*)\<\/think\>/gms, (m, p1) => {
+                                        reasoningContent = p1
+                                        return ""
+                                    })
+                
+                                    if(reasoningContent){
+                                        reasoningContent = reasoningContent.replace(/\<think\>/gm, '')
+                                    }
+                                }                
+                                if(arg.extractJson && (db.jsonSchemaEnabled || arg.schema)){
+                                    for(const key in readed){
+                                        const extracted = extractJSON(readed[key], arg.extractJson)
+                                        JSONreaded[key] = extracted
+                                    }
+                                    console.log(JSONreaded)
+                                    control.enqueue(JSONreaded)
+                                }
+                                else if(reasoningContent){
+                                    control.enqueue({
+                                        "0": `<Thoughts>\n${reasoningContent}\n</Thoughts>\n${readed["0"]}`
+                                    })
+                                }
+                                else{
+                                    control.enqueue(readed)
+                                }
+                                return
                             }
-                            outputDelta += delta.reasoning_content;
-                            // reasoningContent += delta.reasoning_content; // 필요하다면 저장, 전송엔 안 씀
-                        }
-
-                        // 2. 일반 내용(Content) 처리
-                        const content = delta?.content ?? choices.text; // choices.text는 레거시 호환
-                        if (content) {
-                            if (isThinking) {
-                                outputDelta += "\n</Thoughts>\n";
-                                isThinking = false;
+                            const choices = JSON.parse(rawChunk).choices
+                            for(const choice of choices){
+                                const chunk = choice.delta.content ?? choices.text
+                                if(chunk){
+                                    if(arg.multiGen){
+                                        const ind = choice.index.toString()
+                                        if(!readed[ind]){
+                                            readed[ind] = ""
+                                        }
+                                        readed[ind] += chunk
+                                    }
+                                    else{
+                                        if(!readed["0"]){
+                                            readed["0"] = ""
+                                        }
+                                        readed["0"] += chunk
+                                    }
+                                }
+                                // Check for tool calls in the delta
+                                if(choice?.delta?.tool_calls){
+                                    if(!readed["__tool_calls"]){
+                                        readed["__tool_calls"] = JSON.stringify({})
+                                    }
+                                    const toolCallsData = JSON.parse(readed["__tool_calls"])
+                                    
+                                    for(const toolCall of choice.delta.tool_calls) {
+                                        const index = toolCall.index ?? 0
+                                        const toolCallId = toolCall.id
+                                        
+                                        // Initialize tool call data if not exists
+                                        if(!toolCallsData[index]) {
+                                            toolCallsData[index] = {
+                                                id: toolCallId || null,
+                                                type: 'function',
+                                                function: {
+                                                    name: null,
+                                                    arguments: ''
+                                                }
+                                            }
+                                        }
+                                        
+                                        // Update tool call data incrementally
+                                        if(toolCall.id) {
+                                            toolCallsData[index].id = toolCall.id
+                                        }
+                                        if(toolCall.function?.name) {
+                                            toolCallsData[index].function.name = toolCall.function.name
+                                        }
+                                        if(toolCall.function?.arguments) {
+                                            toolCallsData[index].function.arguments += toolCall.function.arguments
+                                        }
+                                    }
+                                    
+                                    readed["__tool_calls"] = JSON.stringify(toolCallsData)
+                                }
+                                if(choice?.delta?.reasoning_content){
+                                    reasoningContent += choice.delta.reasoning_content
+                                }
                             }
-                            outputDelta += content;
-                        }
-
-                        // 3. 데이터 전송 (변화량만 보냄)
-                        if (outputDelta) {
-                            control.enqueue({ "0": outputDelta });
-                        }
+                        } catch (error) {}
                     }
+                }
+                
+                if(arg.modelInfo.flags.includes(LLMFlags.deepSeekThinkingOutput)){
+                    readed["0"] = readed["0"].replace(/(.*)\<\/think\>/gms, (m, p1) => {
+                        reasoningContent = p1
+                        return ""
+                    })
 
-                } catch (error) {
-                    // JSON 파싱 에러는 무시 (다음 청크에서 해결될 수 있음)
+                    if(reasoningContent){
+                        reasoningContent = reasoningContent.replace(/\<think\>/gm, '')
+                    }
                 }
-            }
-        },
-        flush(control) {
-            // 스트림이 끝났는데 버퍼에 남은 게 있다면 처리 (옵션)
-            if (buffer.trim().startsWith("data: [DONE]")) {
-                 if (isThinking) {
-                    control.enqueue({ "0": "\n</Thoughts>\n" });
+                if(arg.extractJson && (db.jsonSchemaEnabled || arg.schema)){
+                    for(const key in readed){
+                        const extracted = extractJSON(readed[key], arg.extractJson)
+                        JSONreaded[key] = extracted
+                    }
+                    console.log(JSONreaded)
+                    control.enqueue(JSONreaded)
                 }
+                else if(reasoningContent){
+                    control.enqueue({
+                        "0": `<Thoughts>\n${reasoningContent}\n</Thoughts>\n${readed["0"]}`
+                    })
+                }
+                else{
+                    control.enqueue(readed)
+                }
+            } catch (error) {
+                
             }
-        }
-    });
+        }        
+    })
 }
 
 function wrapToolStream(
