@@ -9,7 +9,7 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{ChatRequest, Completion, FinishReason, Provider, Usage};
+use super::{reformat, ChatRequest, Completion, FinishReason, Provider, Usage};
 use crate::config::ApiConfig;
 use crate::debug;
 
@@ -64,8 +64,11 @@ struct UsageBody {
 /// The exact JSON body that [`OpenAiProvider::send`] posts. Public so `prompt --wire`
 /// can show the real payload without spending a request.
 pub fn build_body(request: &ChatRequest<'_>) -> Value {
-    let messages: Vec<Value> = request
-        .messages
+    // Normalize here rather than at assembly time: message shape is a property of the
+    // endpoint, not of the prompt, and doing it at the boundary keeps `--wire` honest.
+    let shaped = reformat::reformat(request.messages.to_vec(), &request.shape);
+
+    let messages: Vec<Value> = shaped
         .iter()
         .map(|m| {
             // `name` is dropped: the OpenAI API restricts it to `^[a-zA-Z0-9_-]+$`, and

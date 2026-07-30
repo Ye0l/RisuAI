@@ -132,6 +132,8 @@ fn cmd_prompt(
 ) -> Result<()> {
     let config = store.load_config()?;
     let mut character = store.find_character(query)?;
+    // In memory only — previewing a prompt must not start the chat on disk.
+    prompt::seed_first_message(&mut character, &config);
 
     if let Some(text) = pending {
         character
@@ -178,7 +180,12 @@ fn cmd_config(store: &Store) -> Result<()> {
     println!("data dir  {}", store.root().display());
     println!("config    {}", store.root().join("config.json").display());
     println!("model     {}", config.api.model);
-    println!("endpoint  {}", config.api.base_url);
+    println!("endpoint  {}", debug::redact(&config.api.base_url));
+    println!(
+        "compat    {:?} (resolved: {:?})",
+        config.api.compat,
+        config.api.resolved_compat()
+    );
     println!(
         "api key   {}",
         if config.api.api_key.is_empty() {

@@ -116,6 +116,20 @@ impl Default for Preset {
     }
 }
 
+/// How strict the endpoint is about message shape. Upstream derives this from per-model
+/// `LLMFlags`; without a model list yet, this is a coarse profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Compat {
+    /// Infer from `baseURL` and `model`.
+    #[default]
+    Auto,
+    /// System messages anywhere, repeated roles fine.
+    Openai,
+    /// One leading system message, strictly alternating roles, must start with user.
+    Strict,
+}
+
 /// Where requests go. M0 speaks only the OpenAI-compatible chat-completions dialect, so
 /// any gateway exposing that (OpenAI, OpenRouter, Ollama, llama.cpp, a proxy) works by
 /// changing `baseURL`.
@@ -127,6 +141,50 @@ pub struct ApiConfig {
     pub api_key: String,
     #[serde(default = "default_model")]
     pub model: String,
+    /// Message-shape strictness. `auto` covers the known-strict endpoints.
+    #[serde(default)]
+    pub compat: Compat,
+}
+
+impl ApiConfig {
+    /// Resolve `auto` against the endpoint and model.
+    pub fn resolved_compat(&self) -> Compat {
+        match self.compat {
+            Compat::Auto => {
+                let url = self.base_url.to_lowercase();
+                let model = self.model.to_lowercase();
+
+                // Aggregators normalize message shape server-side, so the strict
+                // rewrite would only degrade the prompt for no benefit — even when the
+                // model behind them is a strict one.
+                const NORMALIZING_HOSTS: [&str; 2] = ["openrouter.ai", "api.together.xyz"];
+                if NORMALIZING_HOSTS.iter().any(|host| url.contains(host)) {
+                    return Compat::Openai;
+                }
+
+                // z.ai and open.bigmodel.cn are the two GLM endpoints; both reject
+                // mid-conversation system messages with "messages parameter is
+                // illegal". DeepSeek and Mistral enforce the same alternation rule.
+                const STRICT_HOSTS: [&str; 4] =
+                    ["z.ai", "bigmodel.cn", "api.deepseek.com", "api.mistral.ai"];
+                const STRICT_MODELS: [&str; 4] = ["glm", "deepseek", "mistral", "codestral"];
+
+                let strict_host = STRICT_HOSTS.iter().any(|host| url.contains(host));
+                // Match each `/`-separated segment, so vendor-prefixed ids such as
+                // `z-ai/glm-4.6` are recognised on plain proxies.
+                let strict_model = model
+                    .split('/')
+                    .any(|segment| STRICT_MODELS.iter().any(|name| segment.starts_with(name)));
+
+                if strict_host || strict_model {
+                    Compat::Strict
+                } else {
+                    Compat::Openai
+                }
+            }
+            explicit => explicit,
+        }
+    }
 }
 
 fn default_base_url() -> String {
@@ -142,6 +200,7 @@ impl Default for ApiConfig {
             base_url: default_base_url(),
             api_key: String::new(),
             model: default_model(),
+            compat: Compat::Auto,
         }
     }
 }
@@ -190,5 +249,73 @@ impl Default for Config {
             api: ApiConfig::default(),
             preset: Preset::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn api(base_url: &str, model: &str) -> ApiConfig {
+        ApiConfig {
+            base_url: base_url.to_string(),
+            model: model.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn detects_glm_endpoints_as_strict() {
+        // The case that produced "messages parameter is illegal".
+        assert_eq!(
+            api("https://api.z.ai/api/paas/v4", "glm-4.6").resolved_compat(),
+            Compat::Strict
+        );
+        assert_eq!(
+            api("https://open.bigmodel.cn/api/paas/v4", "glm-4.5").resolved_compat(),
+            Compat::Strict
+        );
+    }
+
+    #[test]
+    fn detects_strict_models_behind_an_unknown_proxy() {
+        assert_eq!(
+            api("https://my-proxy.example/v1", "glm-4.6").resolved_compat(),
+            Compat::Strict
+        );
+        // Vendor-prefixed ids must match too.
+        assert_eq!(
+            api("https://my-proxy.example/v1", "z-ai/glm-4.6").resolved_compat(),
+            Compat::Strict
+        );
+    }
+
+    #[test]
+    fn leaves_openai_alone() {
+        assert_eq!(
+            api("https://api.openai.com/v1", "gpt-4o-mini").resolved_compat(),
+            Compat::Openai
+        );
+    }
+
+    #[test]
+    fn treats_normalizing_aggregators_as_openai_even_for_strict_models() {
+        // OpenRouter reshapes messages itself; rewriting here would only degrade the
+        // prompt.
+        assert_eq!(
+            api("https://openrouter.ai/api/v1", "z-ai/glm-4.6").resolved_compat(),
+            Compat::Openai
+        );
+    }
+
+    #[test]
+    fn an_explicit_setting_overrides_detection() {
+        let mut config = api("https://api.z.ai/api/paas/v4", "glm-4.6");
+        config.compat = Compat::Openai;
+        assert_eq!(config.resolved_compat(), Compat::Openai);
+
+        let mut config = api("https://api.openai.com/v1", "gpt-4o-mini");
+        config.compat = Compat::Strict;
+        assert_eq!(config.resolved_compat(), Compat::Strict);
     }
 }

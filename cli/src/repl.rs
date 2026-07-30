@@ -7,12 +7,12 @@ use anyhow::Result;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 
-use crate::cbs::{self, CbsContext};
-use crate::config::Config;
+use crate::config::{Compat, Config};
 use crate::debug;
 use crate::model::{Character, Message, Role};
 use crate::prompt;
 use crate::provider::openai::OpenAiProvider;
+use crate::provider::reformat::MessageShape;
 use crate::provider::{ChatMessage, ChatRequest, Completion, FinishReason, Provider};
 use crate::store::Store;
 
@@ -35,10 +35,11 @@ pub async fn run(
     let model = model_override.unwrap_or_else(|| config.api.model.clone());
     let provider = OpenAiProvider::new(&config.api);
 
-    seed_first_message(&mut character, config);
+    prompt::seed_first_message(&mut character, config);
     store.save_character(&character)?;
 
-    println!("{} — {}", character.name, model);
+    let compat = config.api.resolved_compat();
+    println!("{} — {} ({:?} message shape)", character.name, model, compat);
     println!("{}", "-".repeat(40));
     for message in &character.current_chat().message {
         print_turn(&character, config, message);
@@ -88,7 +89,7 @@ pub async fn run(
                         .chats
                         .push(crate::model::Chat::new(format!("Chat {}", index + 1)));
                     character.chat_page = index;
-                    seed_first_message(&mut character, config);
+                    prompt::seed_first_message(&mut character, config);
                     store.save_character(&character)?;
                     println!("started {}", character.current_chat().name);
                     for message in &character.current_chat().message {
@@ -147,6 +148,11 @@ pub fn chat_request<'a>(
     ChatRequest {
         messages,
         model,
+        shape: match config.api.resolved_compat() {
+            Compat::Strict => MessageShape::strict(),
+            // `auto` is already resolved; anything else means no rewriting.
+            _ => MessageShape::openai(),
+        },
         // Upstream stores these on a 0-200 percent scale.
         temperature: preset.temperature / 100.0,
         top_p: preset.top_p,
@@ -254,19 +260,6 @@ fn report_finish(completion: &Completion, max_response: usize) {
             }
         }
     }
-}
-
-/// A new chat opens with the character's greeting, as the UI does.
-fn seed_first_message(character: &mut Character, config: &Config) {
-    if !character.current_chat().message.is_empty() || character.first_message.is_empty() {
-        return;
-    }
-    let ctx = CbsContext::from_character(character, &config.username, &config.persona_prompt);
-    let greeting = cbs::parse(&character.first_message, &ctx);
-    character
-        .current_chat_mut()
-        .message
-        .push(Message::new(Role::Char, greeting));
 }
 
 fn print_turn(character: &Character, config: &Config, message: &Message) {

@@ -52,6 +52,23 @@ pub struct AssembleResult {
     pub trimmed: usize,
 }
 
+/// A new chat opens with the character's greeting, as the UI does.
+///
+/// Shared with `prompt`/`--wire` rather than living in the REPL: a preview of a
+/// not-yet-started chat would otherwise omit the greeting and misrepresent what a real
+/// turn sends.
+pub fn seed_first_message(character: &mut Character, config: &Config) {
+    if !character.current_chat().message.is_empty() || character.first_message.is_empty() {
+        return;
+    }
+    let ctx = CbsContext::from_character(character, &config.username, &config.persona_prompt);
+    let greeting = cbs::parse(&character.first_message, &ctx);
+    character
+        .current_chat_mut()
+        .message
+        .push(Message::new(Role::Char, greeting));
+}
+
 /// Build the full prompt for the next assistant turn.
 pub fn assemble(character: &Character, config: &Config) -> AssembleResult {
     let chat = character.current_chat();

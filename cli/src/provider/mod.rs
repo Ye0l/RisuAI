@@ -5,6 +5,7 @@
 //! upstream's equivalent split is `src/ts/process/request/`.
 
 pub mod openai;
+pub mod reformat;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -106,6 +107,8 @@ pub struct Completion {
 pub struct ChatRequest<'a> {
     pub messages: &'a [ChatMessage],
     pub model: &'a str,
+    /// Applied at the provider boundary, immediately before serialization.
+    pub shape: reformat::MessageShape,
     /// Already converted from upstream's 0-200 percent scale.
     pub temperature: f64,
     pub top_p: f64,

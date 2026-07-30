@@ -140,6 +140,7 @@ cli/
     provider/
       mod.rs          provider trait + ChatMessage
       openai.rs       OpenAI-compatible chat completions
+      reformat.rs     message-shape normalization for strict endpoints
     store.rs          JSON data directory
     repl.rs           interactive loop
 ```
@@ -159,6 +160,36 @@ cargo run -- chat -c <name>                  # interactive chat
 ```
 
 Data lives in `$RISU_CLI_HOME`, else `$XDG_DATA_HOME/risu-cli`, else `~/.risu-cli`.
+
+### Endpoint compatibility
+
+OpenAI accepts system messages anywhere and repeated roles; most other APIs do not.
+RisuAI's `formatingOrder` violates their rules by construction — it interleaves system
+blocks with chat history, and `globalNote` lands after `lastChat`, so the last message
+is usually a system one. GLM/z.ai rejects that outright with
+`messages parameter is illegal`.
+
+`api.compat` picks the message shape, and `reformat.rs` ports upstream's `reformater()`
+(`request.ts:345`) to apply it:
+
+| value | behaviour |
+|---|---|
+| `auto` (default) | infer from `baseURL` and `model` |
+| `openai` | no rewriting |
+| `strict` | one leading system message, alternating roles, must start with user |
+
+`strict` hoists leading system messages into one, demotes the rest to user turns wrapped
+as `system: {{slot}}` (upstream's `systemContentReplacement`), merges adjacent same-role
+turns, and prepends a user turn if needed. Nothing is dropped — the trailing global note
+survives, merged into the final user message.
+
+`auto` resolves to `strict` for z.ai, open.bigmodel.cn, DeepSeek and Mistral hosts, and
+for `glm*`/`deepseek*`/`mistral*` model ids including vendor-prefixed ones
+(`z-ai/glm-4.6`). Aggregators that normalize server-side (OpenRouter, Together) stay on
+`openai` so the prompt is not rewritten needlessly. The resolved value is shown by
+`config` and in the chat header.
+
+Per-model `LLMFlags` (M2) will replace this coarse profile.
 
 ### Inspecting what goes over the wire
 
