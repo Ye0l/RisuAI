@@ -17,13 +17,26 @@ mod token;
 use anyhow::{Context, Result};
 use clap::Parser;
 
+use crate::card::CardSource;
 use crate::cli::{CardCommand, Cli, Command};
 use crate::prompt::AssembleResult;
 use crate::provider::ChatRole;
 use crate::store::Store;
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> std::process::ExitCode {
+    match run().await {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            // `{:#}` gives the whole context chain on one line. A backtrace is noise
+            // for a bad input file, which is most of what can go wrong here.
+            eprintln!("error: {error:#}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run() -> Result<()> {
     let cli = Cli::parse();
     let store = Store::open(cli.data_dir.clone())?;
 
@@ -63,7 +76,9 @@ fn cmd_card(store: &Store, command: CardCommand) -> Result<()> {
         CardCommand::Info { path } => {
             let bytes = std::fs::read(&path)
                 .with_context(|| format!("could not read {}", path.display()))?;
-            let character = card::from_json_slice(&bytes)?;
+            let loaded = card::load(&bytes)?;
+            let character = loaded.character;
+            println!("format         {}", describe_source(&loaded.source));
             println!("name           {}", character.name);
             if !character.creator.is_empty() {
                 println!("creator        {}", character.creator);
@@ -87,9 +102,15 @@ fn cmd_card(store: &Store, command: CardCommand) -> Result<()> {
         CardCommand::Import { path } => {
             let bytes = std::fs::read(&path)
                 .with_context(|| format!("could not read {}", path.display()))?;
-            let character = card::from_json_slice(&bytes)?;
-            let saved = store.save_character(&character)?;
-            println!("imported {} -> {}", character.name, saved.display());
+            let loaded = card::load(&bytes)?;
+            let saved = store.save_character(&loaded.character)?;
+            println!(
+                "imported {} ({}) -> {}",
+                loaded.character.name,
+                describe_source(&loaded.source),
+                saved.display()
+            );
+            warn_about_dropped_data(&loaded.source);
             Ok(())
         }
     }
@@ -142,6 +163,37 @@ fn cmd_config(store: &Store) -> Result<()> {
         }
     );
     Ok(())
+}
+
+fn describe_source(source: &CardSource) -> String {
+    match source {
+        CardSource::Json => "JSON".to_string(),
+        CardSource::Png { asset_chunks: 0 } => "PNG".to_string(),
+        CardSource::Png { asset_chunks } => format!("PNG, {asset_chunks} asset chunk(s)"),
+        CardSource::Charx { assets, has_module } => {
+            let module = if *has_module { ", module.risum" } else { "" };
+            format!("CHARX, {assets} asset(s){module}")
+        }
+    }
+}
+
+/// Assets and embedded modules are recognised but not yet stored. Say so at import
+/// time rather than letting the character quietly come up missing pieces later.
+fn warn_about_dropped_data(source: &CardSource) {
+    let (assets, has_module) = match source {
+        CardSource::Json => (0, false),
+        CardSource::Png { asset_chunks } => (*asset_chunks, false),
+        CardSource::Charx { assets, has_module } => (*assets, *has_module),
+    };
+    if assets > 0 {
+        eprintln!("note: {assets} embedded asset(s) skipped — no asset store yet");
+    }
+    if has_module {
+        eprintln!(
+            "note: module.risum skipped — its lorebook/regex/trigger overrides need \
+             the msgpack reader (M3-3)"
+        );
+    }
 }
 
 /// Human-readable rendering of an assembled prompt, for `prompt` and `/prompt`.

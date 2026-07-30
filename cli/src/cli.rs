@@ -62,13 +62,13 @@ pub enum Command {
 pub enum CardCommand {
     /// Show what a card contains without importing it.
     Info {
-        /// Path to a .json character card.
+        /// Character card: .json, .png, .charx, or a charx-embedded .jpg.
         path: PathBuf,
     },
 
     /// Import a card into the data directory.
     Import {
-        /// Path to a .json character card.
+        /// Character card: .json, .png, .charx, or a charx-embedded .jpg.
         path: PathBuf,
     },
 }

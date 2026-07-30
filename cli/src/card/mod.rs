@@ -1,13 +1,65 @@
-//! Character card loading — JSON only (M0-3).
+//! Character card loading.
 //!
 //! Ports the field mapping of `importCharacterCardSpec` (`src/ts/characterCards.ts:720`)
 //! for `chara_card_v2` / `chara_card_v3`, plus the off-spec fallback at
-//! `characterCards.ts:68`. PNG `tEXt` chunks and CHARX archives are M3-1 / M3-2.
+//! `characterCards.ts:68`.
+//!
+//! Every container format ends up in the same place: extract the embedded card JSON,
+//! then run it through [`from_value`]. `.risum` / `.risup` (RisuAI's own msgpack
+//! formats) still need M3-3's reader.
+
+pub mod charx;
+pub mod png;
 
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 
 use crate::model::{Character, LoreBook};
+
+/// Which container a card arrived in, for reporting back to the user.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CardSource {
+    Json,
+    /// PNG `tEXt` chunks, with the number of embedded asset chunks.
+    Png { asset_chunks: usize },
+    /// CHARX zip — or a zip appended to a JPEG.
+    Charx { assets: usize, has_module: bool },
+}
+
+pub struct LoadedCard {
+    pub character: Character,
+    pub source: CardSource,
+}
+
+/// Detect the container by content, not by file extension: `.jpg` cards are zips,
+/// `.charx` files are zips, and a mislabelled `.png` should still load.
+pub fn load(bytes: &[u8]) -> Result<LoadedCard> {
+    if png::is_png(bytes) {
+        let extracted = png::extract(bytes)?;
+        return Ok(LoadedCard {
+            character: from_json_slice(&extracted.json)?,
+            source: CardSource::Png {
+                asset_chunks: extracted.asset_chunks,
+            },
+        });
+    }
+
+    if charx::looks_like_zip(bytes) || charx::is_jpeg(bytes) {
+        let extracted = charx::extract(bytes)?;
+        return Ok(LoadedCard {
+            character: from_json_slice(&extracted.json)?,
+            source: CardSource::Charx {
+                assets: extracted.assets,
+                has_module: extracted.has_module,
+            },
+        });
+    }
+
+    Ok(LoadedCard {
+        character: from_json_slice(bytes)?,
+        source: CardSource::Json,
+    })
+}
 
 /// Parse a character card from raw JSON bytes.
 pub fn from_json_slice(bytes: &[u8]) -> Result<Character> {

@@ -37,7 +37,7 @@ multimodal, group chat, memory, modules, triggers and lorebooks.
 |---|---|---|---|
 | 0-1 | Cargo crate + clap CLI skeleton | — | done |
 | 0-2 | Data model structs (subset) | `database.svelte.ts:1342/1815/1846/1319/1307` | done |
-| 0-3 | Character card loader — JSON (CCv2/v3) only | `characterCards.ts:720` | done |
+| 0-3 | Character card loader — JSON (CCv2/v3) | `characterCards.ts:720` | done |
 | 0-4 | Prompt assembly — legacy `formatingOrder` path only | `index.svelte.ts:1190,1432` | done |
 | 0-5 | One provider — OpenAI-compatible, non-streaming | `request/openAI/requests.ts` | done |
 | 0-6 | Chat persistence — plain JSON, not msgpack `.bin` | replaces `risuSave.ts` | done |
@@ -73,11 +73,22 @@ multimodal, group chat, memory, modules, triggers and lorebooks.
 
 ## M3 — data interop
 
-| # | Item | Notes |
-|---|---|---|
-| 3-1 | PNG `tEXt` chunk cards (`chara` / `ccv3`) | import + export |
-| 3-2 | CHARX (zip) | import + export |
-| 3-3 | RisuSave `.bin` reader | msgpack + 4 magic headers + gzip/fflate — `risuSave.ts:622`. Unlocks opening existing web saves from the CLI. |
+| # | Item | Notes | Status |
+|---|---|---|---|
+| 3-1 | PNG `tEXt` chunk cards (`chara` / `ccv3`) | **import done** (pulled forward — JSON-only import was not useful in practice, since cards are distributed as PNG/CHARX). Export still pending. | partial |
+| 3-2 | CHARX (zip), incl. charx-embedded JPEG | **import done** (pulled forward). Export still pending. | partial |
+| 3-3 | RisuSave `.bin` reader | msgpack + 4 magic headers + gzip/fflate — `risuSave.ts:622`. Unlocks opening existing web saves, and `module.risum` inside CHARX. | |
+
+Import handles the container formats; two things inside them are recognised but not
+yet stored, and `card import` says so explicitly when it sees them:
+
+- **Embedded assets** (`assets/` in CHARX, `chara-ext-asset_*` PNG chunks) — needs an
+  asset store, which nothing in the CLI uses yet.
+- **`module.risum`** inside a CHARX — msgpack, carries lorebook/regex/trigger
+  overrides. Blocked on M3-3's reader.
+
+Also unsupported: `rcc||`-prefixed PNG cards (RisuAI's compressed variant), and
+`zTXt`/`iTXt` chunks. Both are detected and reported rather than mis-parsed.
 
 ## M4 — later
 
@@ -100,7 +111,10 @@ cli/
     cli.rs            clap definitions
     model.rs          Character / Chat / Message / LoreBook / CustomScript
     preset.rs         Preset + defaults (mirrors presetTemplate)
-    card.rs           CCv2/v3 JSON → Character
+    card/
+      mod.rs          container detection; CCv2/v3 + off-spec JSON → Character
+      png.rs          tEXt chunk extraction
+      charx.rs        zip extraction (also charx-embedded JPEG)
     cbs.rs            M0 stub substituter (M1: real parser)
     token.rs          M0 approximate counter (M1: tiktoken)
     prompt.rs         formatingOrder assembly
@@ -118,7 +132,8 @@ code, the pipeline modules should be split out into a `risu-core` library crate 
 ## Usage
 
 ```sh
-cargo run -- card import path/to/card.json   # import a character card
+cargo run -- card info  path/to/card.png     # inspect without importing
+cargo run -- card import path/to/card.charx  # .json / .png / .charx / .jpg
 cargo run -- ls                              # list characters
 cargo run -- prompt -c <name>                # dry-run: print the assembled prompt
 cargo run -- chat -c <name>                  # interactive chat
