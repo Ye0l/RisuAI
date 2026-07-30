@@ -29,6 +29,12 @@ pub struct MessageShape {
     pub system_content_replacement: String,
     /// What role a demoted system message takes.
     pub system_role_replacement: ChatRole,
+    /// Content for the synthetic user turn inserted by `start_with_user`.
+    ///
+    /// Upstream uses a literal `' '` (`request.ts:422`), which works on providers that
+    /// tolerate whitespace. z.ai does not: it counts a whitespace-only turn as no
+    /// prompt at all and answers "The prompt parameter was not received normally."
+    pub start_placeholder: String,
 }
 
 impl MessageShape {
@@ -41,6 +47,7 @@ impl MessageShape {
             start_with_user: false,
             system_content_replacement: default_system_content_replacement(),
             system_role_replacement: ChatRole::User,
+            start_placeholder: default_start_placeholder(),
         }
     }
 
@@ -53,6 +60,7 @@ impl MessageShape {
             start_with_user: true,
             system_content_replacement: default_system_content_replacement(),
             system_role_replacement: ChatRole::User,
+            start_placeholder: default_start_placeholder(),
         }
     }
 
@@ -61,6 +69,11 @@ impl MessageShape {
 /// `database.svelte.ts:569`.
 pub fn default_system_content_replacement() -> String {
     "system: {{slot}}".to_string()
+}
+
+/// Short, inert, and — unlike upstream's `' '` — not blank.
+pub fn default_start_placeholder() -> String {
+    ".".to_string()
 }
 
 /// Rewrite an assembled prompt into something the provider will accept.
@@ -98,6 +111,13 @@ pub fn reformat(messages: Vec<ChatMessage>, shape: &MessageShape) -> Vec<ChatMes
         }
     }
 
+    // Drop blank turns before merging, so removing one cannot leave two same-role
+    // messages adjacent. A blank turn carries nothing and providers in this class
+    // reject it outright — z.ai answers "The prompt parameter was not received
+    // normally." Assembly already filters blanks, so this is a backstop for anything
+    // the rewriting above could produce.
+    messages.retain(|message| !message.content.trim().is_empty());
+
     if shape.alternate_roles {
         let mut merged: Vec<ChatMessage> = Vec::with_capacity(messages.len());
         for message in messages {
@@ -113,13 +133,17 @@ pub fn reformat(messages: Vec<ChatMessage>, shape: &MessageShape) -> Vec<ChatMes
     }
 
     if shape.start_with_user && messages.first().map(|m| m.role) != Some(ChatRole::User) {
-        // Upstream inserts a single space rather than an empty string: providers that
-        // demand a leading user turn generally also reject empty content.
-        messages.insert(0, ChatMessage::new(ChatRole::User, " "));
+        messages.insert(
+            0,
+            ChatMessage::new(ChatRole::User, shape.start_placeholder.clone()),
+        );
     }
 
     if let Some(system) = hoisted_system {
-        messages.insert(0, system);
+        // A blank system prompt is as illegal as a blank user turn.
+        if !system.content.trim().is_empty() {
+            messages.insert(0, system);
+        }
     }
 
     messages
@@ -202,7 +226,65 @@ mod tests {
         let output = reformat(input, &MessageShape::strict());
         use ChatRole::*;
         assert_eq!(roles(&output), vec![System, User, Assistant, User]);
-        assert_eq!(output[1].content, " ");
+        // Upstream uses a bare space here; z.ai reads that as no prompt at all.
+        assert!(!output[1].content.trim().is_empty());
+    }
+
+    /// A fresh chat with no example dialogue: the greeting is the first turn, so the
+    /// synthetic user message is inserted. This is the shape that produced
+    /// "The prompt parameter was not received normally."
+    #[test]
+    fn a_fresh_chat_sends_no_blank_content() {
+        let input = vec![
+            msg(ChatRole::System, "main + description"),
+            msg(ChatRole::Assistant, "*She looks up.* Oh — hello."),
+            msg(ChatRole::System, "Never speak for User."),
+        ];
+        let output = reformat(input, &MessageShape::strict());
+
+        use ChatRole::*;
+        assert_eq!(roles(&output), vec![System, User, Assistant, User]);
+        assert!(
+            output.iter().all(|m| !m.content.trim().is_empty()),
+            "every message must carry content: {output:?}"
+        );
+    }
+
+    #[test]
+    fn blank_messages_are_dropped_rather_than_sent() {
+        let input = vec![
+            msg(ChatRole::User, "real"),
+            msg(ChatRole::Assistant, "   "),
+            msg(ChatRole::User, "also real"),
+        ];
+        let output = reformat(input, &MessageShape::strict());
+        // Dropping the blank leaves two user turns adjacent; they must then merge,
+        // which is why the drop happens before the alternation pass.
+        assert_eq!(roles(&output), vec![ChatRole::User]);
+        assert_eq!(output[0].content, "real\nalso real");
+    }
+
+    #[test]
+    fn blank_messages_are_dropped_under_the_openai_shape_too() {
+        let input = vec![msg(ChatRole::User, "real"), msg(ChatRole::Assistant, "")];
+        let output = reformat(input, &MessageShape::openai());
+        assert_eq!(roles(&output), vec![ChatRole::User]);
+    }
+
+    #[test]
+    fn a_blank_system_prompt_is_not_prepended() {
+        let input = vec![msg(ChatRole::System, "  "), msg(ChatRole::User, "hi")];
+        let output = reformat(input, &MessageShape::strict());
+        assert_eq!(roles(&output), vec![ChatRole::User]);
+    }
+
+    #[test]
+    fn a_custom_placeholder_is_used() {
+        let mut shape = MessageShape::strict();
+        shape.start_placeholder = "<begin>".to_string();
+        let input = vec![msg(ChatRole::Assistant, "greeting")];
+        let output = reformat(input, &shape);
+        assert_eq!(output[0].content, "<begin>");
     }
 
     #[test]

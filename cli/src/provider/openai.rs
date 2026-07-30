@@ -100,6 +100,12 @@ impl Provider for OpenAiProvider {
     async fn send(&self, request: ChatRequest<'_>) -> Result<Completion> {
         let body = build_body(&request);
 
+        // Catch this here rather than letting the provider reject it: an empty array
+        // produces an opaque provider-side error that says nothing about the cause.
+        if body["messages"].as_array().is_some_and(|m| m.is_empty()) {
+            bail!("nothing to send: the assembled prompt is empty");
+        }
+
         let url = format!("{}/chat/completions", self.base_url);
         let mut builder = self.client.post(&url).json(&body);
         if !self.api_key.is_empty() {

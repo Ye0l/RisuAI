@@ -180,8 +180,15 @@ is usually a system one. GLM/z.ai rejects that outright with
 
 `strict` hoists leading system messages into one, demotes the rest to user turns wrapped
 as `system: {{slot}}` (upstream's `systemContentReplacement`), merges adjacent same-role
-turns, and prepends a user turn if needed. Nothing is dropped — the trailing global note
+turns, and prepends a user turn if needed. No content is lost — the trailing global note
 survives, merged into the final user message.
+
+Blank turns are dropped before the alternation pass (so a removal cannot leave two
+same-role turns adjacent), and the synthetic leading user turn uses `.` rather than
+upstream's literal `' '` (`request.ts:422`). z.ai counts a whitespace-only turn as no
+prompt at all and answers "The prompt parameter was not received normally", which is
+what a fresh chat hit: the character greets first, so that placeholder is the opening
+turn.
 
 `auto` resolves to `strict` for z.ai, open.bigmodel.cn, DeepSeek and Mistral hosts, and
 for `glm*`/`deepseek*`/`mistral*` model ids including vendor-prefixed ones
