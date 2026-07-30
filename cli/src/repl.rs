@@ -170,12 +170,7 @@ async fn generate(
     store: &Store,
 ) -> Result<()> {
     let assembled = prompt::assemble(character, config);
-    if assembled.trimmed > 0 {
-        eprintln!(
-            "(trimmed {} old message(s) to fit maxContext)",
-            assembled.trimmed
-        );
-    }
+    warn_about_assembly(&assembled, config);
 
     let preset = &config.preset;
     let request = chat_request(&assembled.messages, config, model);
@@ -194,6 +189,32 @@ async fn generate(
         }
     }
     Ok(())
+}
+
+/// Report anything about the assembled prompt that would otherwise silently change what
+/// the model sees.
+fn warn_about_assembly(assembled: &prompt::AssembleResult, config: &Config) {
+    if assembled.trimmed > 0 {
+        eprintln!(
+            "  · trimmed {} old message(s) to fit maxContext",
+            assembled.trimmed
+        );
+    }
+    if assembled.over_budget > 0 {
+        let preset = &config.preset;
+        eprintln!(
+            "  ⚠ prompt is ~{} tokens over maxContext ({}) even after trimming. \
+             maxResponse ({}) plus the static prompt blocks leave no room for the \
+             conversation — raise maxContext or lower maxResponse.",
+            assembled.over_budget, preset.max_context, preset.max_response
+        );
+    }
+    if assembled.drops_history {
+        eprintln!(
+            "  ⚠ formatingOrder has no `chats` entry, so no conversation history is \
+             being sent."
+        );
+    }
 }
 
 /// Say why the model stopped. Without this a reply cut off at `max_tokens` is

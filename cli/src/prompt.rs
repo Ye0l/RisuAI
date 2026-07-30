@@ -50,6 +50,11 @@ pub struct AssembleResult {
     pub messages: Vec<ChatMessage>,
     /// Number of history messages dropped to fit `maxContext`.
     pub trimmed: usize,
+    /// Tokens by which the prompt still exceeds `maxContext` after trimming. Non-zero
+    /// means `maxResponse` plus the static blocks leave no room for the conversation.
+    pub over_budget: usize,
+    /// `formatingOrder` omits `chats`, so no history is emitted at all.
+    pub drops_history: bool,
 }
 
 /// A new chat opens with the character's greeting, as the UI does.
@@ -158,29 +163,25 @@ pub fn assemble(character: &Character, config: &Config) -> AssembleResult {
     // Context trimming (index.svelte.ts:1110-1120). Upstream reserves maxResponse
     // plus a 50-token cushion, then drops from the front until it fits.
     let budget = preset.max_context;
-    let mut used = preset.max_response + 50 + count_buckets(&buckets);
+    let fixed = preset.max_response + 50 + count_buckets(&buckets);
     let mut chat_tokens = token::approx_messages(&chats);
     let mut trimmed = 0;
-    while used + chat_tokens > budget && chats.len() > 1 {
-        // Never drop the framing messages that precede real history.
-        let removable = chats.iter().position(|m| m.removable);
-        let Some(index) = removable else { break };
+    // The newest history turn is the message being replied to; trimming it away sends
+    // a prompt that silently omits what the user just typed. Keep at least one.
+    let mut removable = chats.iter().filter(|m| m.removable).count();
+    while fixed + chat_tokens > budget && removable > 1 {
+        let Some(index) = chats.iter().position(|m| m.removable) else {
+            break;
+        };
         chat_tokens -= token::approx_message(&chats[index]);
         chats.remove(index);
+        removable -= 1;
         trimmed += 1;
     }
-    used += chat_tokens;
-    let _ = used;
-
-    // `lastChat` is split off the tail so `formatingOrder` can place trailing
-    // instructions after the final user turn (index.svelte.ts:1132).
-    if let Some(last) = chats.pop() {
-        buckets.last_chat.push(last);
-    }
-    buckets.chats = chats
-        .into_iter()
-        .filter(|m| !m.content.trim().is_empty())
-        .collect();
+    // What could not be trimmed away. Non-zero means the fixed overhead alone
+    // (maxResponse plus the static prompt blocks) does not leave room for the
+    // conversation, which is a configuration problem, not something to paper over.
+    let over_budget = (fixed + chat_tokens).saturating_sub(budget);
 
     // --- concatenate in formatingOrder, then postEverything (1190-1193, 1432) ---
     let mut order = preset.formating_order.clone();
@@ -188,16 +189,35 @@ pub fn assemble(character: &Character, config: &Config) -> AssembleResult {
         order.push(FormatingOrderItem::PostEverything);
     }
 
+    // `lastChat` is split off the tail so `formatingOrder` can place trailing
+    // instructions after the final user turn (index.svelte.ts:1132). Only split it off
+    // if the order actually emits that bucket — otherwise the newest message, normally
+    // the one just typed, would be dropped on the floor.
+    if order.contains(&FormatingOrderItem::LastChat) {
+        if let Some(last) = chats.pop() {
+            buckets.last_chat.push(last);
+        }
+    }
+    buckets.chats = chats
+        .into_iter()
+        .filter(|m| !m.content.trim().is_empty())
+        .collect();
+
     let mut messages: Vec<ChatMessage> = Vec::new();
-    for item in order {
-        push_prompts(&mut messages, buckets.get(item));
+    for item in &order {
+        push_prompts(&mut messages, buckets.get(*item));
     }
 
     for message in &mut messages {
         message.content = message.content.trim().to_string();
     }
 
-    AssembleResult { messages, trimmed }
+    AssembleResult {
+        messages,
+        trimmed,
+        over_budget,
+        drops_history: !order.contains(&FormatingOrderItem::Chats),
+    }
 }
 
 fn count_buckets(buckets: &Buckets) -> usize {
@@ -624,6 +644,83 @@ mod tests {
         assert!(joined.contains("message number 39 "));
         // Framing is preserved even under pressure.
         assert!(joined.contains("[Start a new chat]"));
+    }
+
+    /// The newest turn is what the model is being asked to reply to. Trimming it away
+    /// produces a prompt that silently omits what the user just typed.
+    #[test]
+    fn the_newest_turn_survives_an_impossible_budget() {
+        let mut character = character();
+        character.desc = "long description. ".repeat(400);
+        character.current_chat_mut().message.push(Message::new(
+            Role::User,
+            "MY_TYPED_INPUT",
+        ));
+
+        let mut config = config();
+        // maxResponse alone exceeds maxContext: no trimming can ever satisfy this.
+        config.preset.max_context = 4000;
+        config.preset.max_response = 6000;
+
+        let result = assemble(&character, &config);
+        let joined = contents(&result.messages).join("\n");
+        assert!(
+            joined.contains("MY_TYPED_INPUT"),
+            "the just-typed message must survive: {joined}"
+        );
+        assert!(
+            result.over_budget > 0,
+            "an unsatisfiable budget must be reported, not hidden"
+        );
+    }
+
+    #[test]
+    fn a_satisfiable_budget_reports_no_overrun() {
+        let mut character = character();
+        for i in 0..20 {
+            character
+                .current_chat_mut()
+                .message
+                .push(Message::new(Role::User, format!("message {i} ").repeat(20)));
+        }
+        let mut config = config();
+        config.preset.max_context = 4000;
+        config.preset.max_response = 300;
+
+        let result = assemble(&character, &config);
+        assert_eq!(result.over_budget, 0);
+        assert!(!result.drops_history);
+    }
+
+    /// `lastChat` receives the newest message. If the order never emits that bucket the
+    /// message has to stay in `chats` instead of vanishing.
+    #[test]
+    fn the_newest_turn_survives_an_order_without_last_chat() {
+        use FormatingOrderItem::*;
+        let mut character = character();
+        character
+            .current_chat_mut()
+            .message
+            .push(Message::new(Role::User, "MY_TYPED_INPUT"));
+
+        let mut config = config();
+        config.preset.formating_order = vec![Main, Description, Chats, GlobalNote];
+
+        let result = assemble(&character, &config);
+        assert!(
+            contents(&result.messages).join("\n").contains("MY_TYPED_INPUT"),
+            "{:?}",
+            contents(&result.messages)
+        );
+    }
+
+    #[test]
+    fn an_order_without_chats_is_reported() {
+        use FormatingOrderItem::*;
+        let mut config = config();
+        config.preset.formating_order = vec![Main, Description, LastChat];
+        let result = assemble(&character(), &config);
+        assert!(result.drops_history);
     }
 
     #[test]

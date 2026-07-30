@@ -53,6 +53,27 @@ multimodal, group chat, memory, modules, triggers and lorebooks.
   at least does something. Replaced by tiktoken in M1-4. The per-turn usage line prints
   the provider's real counts alongside it, so the size of the error stays visible.
 
+### Context budget
+
+`maxContext` bounds the whole prompt; `maxResponse` is reserved out of it before any
+history is added. If `maxResponse` plus the static blocks (main, description, persona,
+global note…) already fills `maxContext`, there is no room left for the conversation.
+
+Trimming drops the oldest history first but **never the newest turn** — that is the
+message being replied to, and removing it sends a prompt that silently omits what the
+user just typed. When the budget still cannot be met the overrun is reported rather than
+absorbed:
+
+```
+  · trimmed 1 old message(s) to fit maxContext
+  ⚠ prompt is ~2867 tokens over maxContext (4000) even after trimming. maxResponse (6000)
+    plus the static prompt blocks leave no room for the conversation — raise maxContext
+    or lower maxResponse.
+```
+
+A `formatingOrder` with no `chats` entry is likewise reported instead of quietly sending
+no history.
+
 ### Reply truncation
 
 Replies are capped by `preset.maxResponse`, which defaults to 500 to match upstream

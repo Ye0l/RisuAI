@@ -257,5 +257,14 @@ pub fn render_prompt(result: &AssembleResult) -> String {
         token::approx_messages(&result.messages),
         result.trimmed
     ));
+    if result.over_budget > 0 {
+        out.push_str(&format!(
+            "\n⚠ ~{} tokens over maxContext even after trimming",
+            result.over_budget
+        ));
+    }
+    if result.drops_history {
+        out.push_str("\n⚠ formatingOrder has no `chats` entry: no history is sent");
+    }
     out
 }
