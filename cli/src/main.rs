@@ -7,6 +7,7 @@ mod cbs;
 mod card;
 mod cli;
 mod config;
+mod debug;
 mod model;
 mod prompt;
 mod provider;
@@ -38,6 +39,7 @@ async fn main() -> std::process::ExitCode {
 
 async fn run() -> Result<()> {
     let cli = Cli::parse();
+    debug::set_enabled(cli.debug || debug_from_env());
     let store = Store::open(cli.data_dir.clone())?;
 
     match cli.command {
@@ -47,7 +49,8 @@ async fn run() -> Result<()> {
             character,
             message,
             json,
-        } => cmd_prompt(&store, &character, message, json),
+            wire,
+        } => cmd_prompt(&store, &character, message, json, wire),
         Command::Chat {
             character,
             model,
@@ -125,6 +128,7 @@ fn cmd_prompt(
     query: &str,
     pending: Option<String>,
     as_json: bool,
+    as_wire: bool,
 ) -> Result<()> {
     let config = store.load_config()?;
     let mut character = store.find_character(query)?;
@@ -137,7 +141,16 @@ fn cmd_prompt(
     }
 
     let result = prompt::assemble(&character, &config);
-    if as_json {
+    if as_wire {
+        // Same builder the provider uses, so this cannot drift from what is sent.
+        let request = repl::chat_request(&result.messages, &config, &config.api.model);
+        let body = provider::openai::build_body(&request);
+        println!(
+            "POST {}",
+            debug::redact(&format!("{}/chat/completions", config.api.base_url))
+        );
+        println!("{}", serde_json::to_string_pretty(&body)?);
+    } else if as_json {
         println!("{}", serde_json::to_string_pretty(&result.messages)?);
     } else {
         println!("{}", render_prompt(&result));
@@ -175,6 +188,18 @@ fn cmd_config(store: &Store) -> Result<()> {
         }
     );
     Ok(())
+}
+
+/// `RISU_DEBUG`, parsed the way people actually write it. Clap's own `env` support for
+/// a bool flag insists on the literal `true`/`false` and errors on `RISU_DEBUG=1`.
+fn debug_from_env() -> bool {
+    match std::env::var("RISU_DEBUG") {
+        Ok(value) => !matches!(
+            value.trim().to_lowercase().as_str(),
+            "" | "0" | "false" | "no" | "off"
+        ),
+        Err(_) => false,
+    }
 }
 
 fn describe_source(source: &CardSource) -> String {

@@ -134,6 +134,7 @@ cli/
       png.rs          tEXt chunk extraction
       charx.rs        zip extraction (also charx-embedded JPEG)
     cbs.rs            M0 stub substituter (M1: real parser)
+    debug.rs          wire-level request/response logging, with redaction
     token.rs          M0 approximate counter (M1: tiktoken)
     prompt.rs         formatingOrder assembly
     provider/
@@ -158,3 +159,25 @@ cargo run -- chat -c <name>                  # interactive chat
 ```
 
 Data lives in `$RISU_CLI_HOME`, else `$XDG_DATA_HOME/risu-cli`, else `~/.risu-cli`.
+
+### Inspecting what goes over the wire
+
+```sh
+cargo run -- prompt -c <name> --wire     # exact POST body, without sending
+cargo run -- --debug chat -c <name>      # full request + response per turn
+RISU_DEBUG=1 cargo run -- chat -c <name> # same, via env
+```
+
+In the REPL, `/wire` prints the next request body and `/debug` toggles logging
+mid-session.
+
+`--debug` logs the request **after** reqwest builds it — real headers, real serialized
+body — so what is printed cannot drift from what is sent. `--wire` and the real request
+share one `build_body`, for the same reason. Responses are logged raw, before parsing,
+with status, elapsed time and headers; a non-JSON body (an HTML error page from a
+proxy) is passed through as text rather than swallowed.
+
+API keys are redacted everywhere, including keys embedded in `baseURL` by proxies —
+registration happens at config-load time so no code path can print one. The redaction
+keeps a short fingerprint (`sk-…89[redacted 35 chars]`) so two different wrong keys
+stay distinguishable.

@@ -13,6 +13,11 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "DIR")]
     pub data_dir: Option<PathBuf>,
 
+    /// Log the full HTTP request and response to stderr. API keys are redacted.
+    /// Can also be set with RISU_DEBUG=1.
+    #[arg(short, long, global = true)]
+    pub debug: bool,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -41,6 +46,10 @@ pub enum Command {
         /// Emit the raw JSON message array instead of the readable rendering.
         #[arg(long)]
         json: bool,
+
+        /// Emit the exact request body that would be POSTed, without sending it.
+        #[arg(long, conflicts_with = "json")]
+        wire: bool,
     },
 
     /// Start an interactive chat.

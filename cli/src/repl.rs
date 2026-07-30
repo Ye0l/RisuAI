@@ -9,15 +9,18 @@ use rustyline::DefaultEditor;
 
 use crate::cbs::{self, CbsContext};
 use crate::config::Config;
+use crate::debug;
 use crate::model::{Character, Message, Role};
 use crate::prompt;
 use crate::provider::openai::OpenAiProvider;
-use crate::provider::{ChatRequest, Completion, FinishReason, Provider};
+use crate::provider::{ChatMessage, ChatRequest, Completion, FinishReason, Provider};
 use crate::store::Store;
 
 const HELP: &str = "\
   /help          show this
   /prompt        print the prompt that would be sent next
+  /wire          print the exact request body that would be POSTed
+  /debug         toggle full HTTP request/response logging
   /retry         regenerate the last reply
   /undo          drop the last exchange
   /new           start a fresh chat with this character
@@ -63,6 +66,21 @@ pub async fn run(
                 "prompt" => {
                     let result = prompt::assemble(&character, config);
                     println!("{}", crate::render_prompt(&result));
+                }
+                "wire" => {
+                    let result = prompt::assemble(&character, config);
+                    let request = chat_request(&result.messages, config, &model);
+                    let body = crate::provider::openai::build_body(&request);
+                    println!(
+                        "POST {}",
+                        debug::redact(&format!("{}/chat/completions", config.api.base_url))
+                    );
+                    println!("{}", serde_json::to_string_pretty(&body)?);
+                }
+                "debug" => {
+                    let enabled = !debug::is_enabled();
+                    debug::set_enabled(enabled);
+                    println!("debug logging {}", if enabled { "on" } else { "off" });
                 }
                 "new" => {
                     let index = character.chats.len();
@@ -118,6 +136,26 @@ pub async fn run(
     Ok(())
 }
 
+/// Build the provider request from a preset. Shared with `prompt --wire` so that what
+/// `--wire` prints is necessarily what a real turn would send.
+pub fn chat_request<'a>(
+    messages: &'a [ChatMessage],
+    config: &'a Config,
+    model: &'a str,
+) -> ChatRequest<'a> {
+    let preset = &config.preset;
+    ChatRequest {
+        messages,
+        model,
+        // Upstream stores these on a 0-200 percent scale.
+        temperature: preset.temperature / 100.0,
+        top_p: preset.top_p,
+        frequency_penalty: preset.frequency_penalty / 100.0,
+        presence_penalty: preset.presence_penalty / 100.0,
+        max_tokens: preset.max_response,
+    }
+}
+
 async fn generate(
     provider: &OpenAiProvider,
     character: &mut Character,
@@ -134,16 +172,7 @@ async fn generate(
     }
 
     let preset = &config.preset;
-    let request = ChatRequest {
-        messages: &assembled.messages,
-        model,
-        // Upstream stores these on a 0-200 percent scale.
-        temperature: preset.temperature / 100.0,
-        top_p: preset.top_p,
-        frequency_penalty: preset.frequency_penalty / 100.0,
-        presence_penalty: preset.presence_penalty / 100.0,
-        max_tokens: preset.max_response,
-    };
+    let request = chat_request(&assembled.messages, config, model);
 
     match provider.send(request).await {
         Ok(completion) => {

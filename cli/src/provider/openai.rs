@@ -3,12 +3,15 @@
 //! Derived from `src/ts/process/request/openAI/requests.ts`, reduced to the
 //! non-streaming path. Any gateway speaking this dialect works by changing `baseURL`.
 
+use std::time::Instant;
+
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::{ChatRequest, Completion, FinishReason, Provider, Usage};
 use crate::config::ApiConfig;
+use crate::debug;
 
 pub struct OpenAiProvider {
     client: reqwest::Client,
@@ -18,6 +21,8 @@ pub struct OpenAiProvider {
 
 impl OpenAiProvider {
     pub fn new(config: &ApiConfig) -> Self {
+        // Register before any request can be logged, so the key can never reach stderr.
+        debug::add_secret(&config.api_key);
         OpenAiProvider {
             client: reqwest::Client::new(),
             base_url: config.base_url.trim_end_matches('/').to_string(),
@@ -56,36 +61,41 @@ struct UsageBody {
     completion_tokens: Option<u64>,
 }
 
+/// The exact JSON body that [`OpenAiProvider::send`] posts. Public so `prompt --wire`
+/// can show the real payload without spending a request.
+pub fn build_body(request: &ChatRequest<'_>) -> Value {
+    let messages: Vec<Value> = request
+        .messages
+        .iter()
+        .map(|m| {
+            // `name` is dropped: the OpenAI API restricts it to `^[a-zA-Z0-9_-]+$`, and
+            // character names routinely violate that. Upstream gates it behind
+            // `promptSettings.sendName` for the same reason. Sending names is M2 work.
+            json!({
+                "role": match m.role {
+                    super::ChatRole::System => "system",
+                    super::ChatRole::User => "user",
+                    super::ChatRole::Assistant => "assistant",
+                },
+                "content": m.content,
+            })
+        })
+        .collect();
+
+    json!({
+        "model": request.model,
+        "messages": messages,
+        "temperature": request.temperature,
+        "top_p": request.top_p,
+        "frequency_penalty": request.frequency_penalty,
+        "presence_penalty": request.presence_penalty,
+        "max_tokens": request.max_tokens,
+    })
+}
+
 impl Provider for OpenAiProvider {
     async fn send(&self, request: ChatRequest<'_>) -> Result<Completion> {
-        let messages: Vec<Value> = request
-            .messages
-            .iter()
-            .map(|m| {
-                // `name` is dropped: the OpenAI API restricts it to
-                // `^[a-zA-Z0-9_-]+$`, and character names routinely violate that.
-                // Upstream gates it behind `promptSettings.sendName` for the same
-                // reason. Sending names is M2 work.
-                json!({
-                    "role": match m.role {
-                        super::ChatRole::System => "system",
-                        super::ChatRole::User => "user",
-                        super::ChatRole::Assistant => "assistant",
-                    },
-                    "content": m.content,
-                })
-            })
-            .collect();
-
-        let body = json!({
-            "model": request.model,
-            "messages": messages,
-            "temperature": request.temperature,
-            "top_p": request.top_p,
-            "frequency_penalty": request.frequency_penalty,
-            "presence_penalty": request.presence_penalty,
-            "max_tokens": request.max_tokens,
-        });
+        let body = build_body(&request);
 
         let url = format!("{}/chat/completions", self.base_url);
         let mut builder = self.client.post(&url).json(&body);
@@ -93,16 +103,54 @@ impl Provider for OpenAiProvider {
             builder = builder.bearer_auth(&self.api_key);
         }
 
-        let response = builder
-            .send()
+        // Build first, then execute, so debug output shows the request reqwest actually
+        // sends — real headers, real serialized body — instead of a reconstruction that
+        // could drift from it.
+        let http_request = builder.build().context("could not build the request")?;
+        if debug::is_enabled() {
+            let headers = http_request
+                .headers()
+                .iter()
+                .map(|(name, value)| {
+                    (
+                        name.to_string(),
+                        value.to_str().unwrap_or("<non-utf8>").to_string(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            debug::request(
+                http_request.method().as_str(),
+                http_request.url().as_str(),
+                &headers,
+                http_request.body().and_then(|body| body.as_bytes()),
+            );
+        }
+
+        let started = Instant::now();
+        let response = self
+            .client
+            .execute(http_request)
             .await
             .with_context(|| format!("request to {url} failed"))?;
+        let elapsed = started.elapsed();
 
         let status = response.status();
+        let response_headers = response
+            .headers()
+            .iter()
+            .map(|(name, value)| {
+                (
+                    name.to_string(),
+                    value.to_str().unwrap_or("<non-utf8>").to_string(),
+                )
+            })
+            .collect::<Vec<_>>();
         let text = response
             .text()
             .await
             .context("could not read response body")?;
+
+        debug::response(status.as_u16(), elapsed, &response_headers, &text);
 
         if !status.is_success() {
             bail!("{status} from {url}: {}", truncate(&text, 2000));

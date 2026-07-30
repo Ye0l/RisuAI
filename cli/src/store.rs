@@ -66,7 +66,13 @@ impl Store {
         }
         let text = fs::read_to_string(&path)
             .with_context(|| format!("could not read {}", path.display()))?;
-        serde_json::from_str(&text).with_context(|| format!("invalid config {}", path.display()))
+        let config: Config = serde_json::from_str(&text)
+            .with_context(|| format!("invalid config {}", path.display()))?;
+        // Register here rather than at the request site: the key can also be embedded
+        // in `baseURL` on some proxies, and every command that prints the endpoint
+        // should redact it.
+        crate::debug::add_secret(&config.api.api_key);
+        Ok(config)
     }
 
     pub fn save_config(&self, config: &Config) -> Result<()> {
