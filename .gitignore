@@ -29,6 +29,7 @@ src-others/
 *.sw?
 /src-tauri/target/
 /src-tauri/gen/
+/cli/target/
 /build/
 pycache/
 test.ts
