@@ -50,7 +50,25 @@ multimodal, group chat, memory, modules, triggers and lorebooks.
   descriptions are full of `{{char}}`, so shipping M0 without *some* substitution would
   produce visibly broken prompts.
 - `token::approx` — `chars / 4` heuristic used for `maxContext` trimming, so the budget
-  at least does something. Replaced by tiktoken in M1-4.
+  at least does something. Replaced by tiktoken in M1-4. The per-turn usage line prints
+  the provider's real counts alongside it, so the size of the error stays visible.
+
+### Reply truncation
+
+Replies are capped by `preset.maxResponse`, which defaults to 500 to match upstream
+(`database.svelte.ts:59` — note `presetTemplate.maxResponse` is 300, but the DB-level
+field is what requests actually use). That is small for modern models, so every turn
+reports the provider's `finish_reason` and token usage:
+
+```
+  · 412 prompt + 500/500 reply tokens
+  ⚠ cut off: hit max_tokens (500). Raise `preset.maxResponse` in config.json, or pass `--max-response N`.
+```
+
+A clean stop, a cap hit, a provider-side limit below the cap, a content filter, and a
+gateway that reports no `finish_reason` at all are each distinguished — a truncated
+reply is never silent. Streaming (M2-5) will need the same treatment on the
+`finish_reason` field of the final chunk.
 
 ## M1 — the load-bearing core
 

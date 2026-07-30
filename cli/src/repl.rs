@@ -12,7 +12,7 @@ use crate::config::Config;
 use crate::model::{Character, Message, Role};
 use crate::prompt;
 use crate::provider::openai::OpenAiProvider;
-use crate::provider::{ChatRequest, Provider};
+use crate::provider::{ChatRequest, Completion, FinishReason, Provider};
 use crate::store::Store;
 
 const HELP: &str = "\
@@ -146,18 +146,85 @@ async fn generate(
     };
 
     match provider.send(request).await {
-        Ok(reply) => {
-            let message = Message::new(Role::Char, reply);
+        Ok(completion) => {
+            let message = Message::new(Role::Char, &completion.content);
             print_turn(character, config, &message);
+            report_finish(&completion, preset.max_response);
             character.current_chat_mut().message.push(message);
             store.save_character(character)?;
         }
         Err(error) => {
             // Leave the user's turn in place so /retry works after fixing the cause.
-            eprintln!("request failed: {error:#}");
+            eprintln!("error: {error:#}");
         }
     }
     Ok(())
+}
+
+/// Say why the model stopped. Without this a reply cut off at `max_tokens` is
+/// indistinguishable from a short reply — which is the whole problem being solved here.
+fn report_finish(completion: &Completion, max_response: usize) {
+    // Real counts from the provider. Worth showing every turn: they are the ground
+    // truth against which `token::approx` (the M0 stub used for context trimming) can
+    // be sanity-checked, and they make budget pressure visible before it truncates.
+    match (
+        completion.usage.prompt_tokens,
+        completion.usage.completion_tokens,
+    ) {
+        (Some(prompt), Some(reply)) => {
+            eprintln!("  · {prompt} prompt + {reply}/{max_response} reply tokens")
+        }
+        (Some(prompt), None) => eprintln!("  · {prompt} prompt tokens"),
+        (None, Some(reply)) => eprintln!("  · {reply}/{max_response} reply tokens"),
+        (None, None) => {}
+    }
+
+    match &completion.finish_reason {
+        FinishReason::Length => {
+            // Only blame our cap when the reply actually reached it. A `length` stop
+            // well under budget means something upstream imposed its own limit, and
+            // telling the user to raise `maxResponse` would send them the wrong way.
+            let reached_cap = completion
+                .usage
+                .completion_tokens
+                .is_none_or(|used| used + used / 10 >= max_response as u64);
+            if reached_cap {
+                eprintln!(
+                    "  ⚠ cut off: hit max_tokens ({max_response}). Raise \
+                     `preset.maxResponse` in config.json, or pass `--max-response N`."
+                );
+            } else {
+                let used = completion.usage.completion_tokens.unwrap_or(0);
+                eprintln!(
+                    "  ⚠ cut off after {used} tokens, well under the {max_response} \
+                     requested — the provider or gateway applied its own limit."
+                );
+            }
+        }
+        FinishReason::ContentFilter => {
+            eprintln!("  ⚠ the provider's content filter stopped this response early.");
+        }
+        FinishReason::Other(reason) => {
+            eprintln!("  ⚠ stopped for an unrecognized reason: {reason:?}");
+        }
+        FinishReason::Unknown => {
+            // Some gateways omit it entirely. Flag it once so a silent truncation is
+            // never mistaken for a clean stop.
+            eprintln!("  · the provider reported no finish_reason, so truncation cannot be ruled out");
+        }
+        FinishReason::Stop => {
+            if let Some(completion_tokens) = completion.usage.completion_tokens {
+                // A "stop" that lands exactly on the cap is suspicious: some gateways
+                // mislabel a truncation.
+                if completion_tokens >= max_response as u64 {
+                    eprintln!(
+                        "  ⚠ reported a clean stop but used the whole {max_response}-token \
+                         budget — likely truncated anyway."
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// A new chat opens with the character's greeting, as the UI does.

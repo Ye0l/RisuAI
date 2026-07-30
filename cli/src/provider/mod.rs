@@ -60,6 +60,48 @@ impl ChatMessage {
     }
 }
 
+/// Why the model stopped. The distinction matters: a reply cut off at the token cap
+/// looks exactly like a short reply unless the provider's `finish_reason` is surfaced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FinishReason {
+    /// Ran to a natural stop or a stop sequence.
+    Stop,
+    /// Hit `max_tokens`. The text is truncated mid-thought.
+    Length,
+    /// Provider-side filtering.
+    ContentFilter,
+    /// Anything else, kept verbatim so unusual gateways stay debuggable.
+    Other(String),
+    /// The provider did not report one.
+    Unknown,
+}
+
+impl FinishReason {
+    pub fn parse(raw: Option<&str>) -> Self {
+        match raw {
+            None => FinishReason::Unknown,
+            // OpenAI says "stop"; some gateways say "end_turn" / "eos".
+            Some("stop" | "end_turn" | "eos" | "STOP") => FinishReason::Stop,
+            Some("length" | "max_tokens" | "MAX_TOKENS") => FinishReason::Length,
+            Some("content_filter" | "SAFETY") => FinishReason::ContentFilter,
+            Some(other) => FinishReason::Other(other.to_string()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Usage {
+    pub prompt_tokens: Option<u64>,
+    pub completion_tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Completion {
+    pub content: String,
+    pub finish_reason: FinishReason,
+    pub usage: Usage,
+}
+
 /// Everything a provider needs for one completion.
 pub struct ChatRequest<'a> {
     pub messages: &'a [ChatMessage],
@@ -75,6 +117,5 @@ pub struct ChatRequest<'a> {
 // Only ever used through a concrete type, so the lack of dyn-compatibility is fine.
 #[allow(async_fn_in_trait)]
 pub trait Provider {
-    /// Returns the assistant's reply text.
-    async fn send(&self, request: ChatRequest<'_>) -> Result<String>;
+    async fn send(&self, request: ChatRequest<'_>) -> Result<Completion>;
 }

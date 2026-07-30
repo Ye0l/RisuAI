@@ -52,6 +52,10 @@ pub enum Command {
         /// Override the configured model for this session.
         #[arg(long)]
         model: Option<String>,
+
+        /// Override preset.maxResponse (the reply token cap) for this session.
+        #[arg(long, value_name = "N")]
+        max_response: Option<usize>,
     },
 
     /// Print the resolved data directory and config path.

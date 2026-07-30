@@ -77,10 +77,14 @@ fn default_formating_order() -> Vec<FormatingOrderItem> {
 }
 
 fn default_max_context() -> usize {
+    // `database.svelte.ts:56`.
     4000
 }
 fn default_max_response() -> usize {
-    300
+    // `database.svelte.ts:59`. Note this is the live default a fresh RisuAI install
+    // gets; `presetTemplate.maxResponse` is 300 but the DB-level field wins. Still
+    // small for modern models — expect to raise it.
+    500
 }
 fn default_temperature() -> f64 {
     80.0

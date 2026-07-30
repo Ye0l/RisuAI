@@ -48,7 +48,11 @@ async fn run() -> Result<()> {
             message,
             json,
         } => cmd_prompt(&store, &character, message, json),
-        Command::Chat { character, model } => cmd_chat(&store, &character, model).await,
+        Command::Chat {
+            character,
+            model,
+            max_response,
+        } => cmd_chat(&store, &character, model, max_response).await,
         Command::Config => cmd_config(&store),
     }
 }
@@ -141,8 +145,16 @@ fn cmd_prompt(
     Ok(())
 }
 
-async fn cmd_chat(store: &Store, query: &str, model: Option<String>) -> Result<()> {
-    let config = store.load_config()?;
+async fn cmd_chat(
+    store: &Store,
+    query: &str,
+    model: Option<String>,
+    max_response: Option<usize>,
+) -> Result<()> {
+    let mut config = store.load_config()?;
+    if let Some(max_response) = max_response {
+        config.preset.max_response = max_response;
+    }
     let character = store.find_character(query)?;
     repl::run(store, character, &config, model).await
 }
